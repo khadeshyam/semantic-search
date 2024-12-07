@@ -1,65 +1,55 @@
 from flask import Flask, request, jsonify
-from sentence_transformers import SentenceTransformer, util
-import os
+from utils import get_embedding, insert_post_to_db, search_posts, close_db_connection
 
 app = Flask(__name__)
 
-# Define the path for the locally saved model
-local_model_path = "./models/all-MiniLM-L6-v2"
-
-# Try to load the model from the local path, or fallback to downloading it
-try:
-    print(f"Trying to load the model from {local_model_path}...")
-    if not os.path.exists(local_model_path):
-        raise FileNotFoundError("Model folder not found.")
-    
-    # Load the local model
-    model = SentenceTransformer(local_model_path)
-    print("Successfully loaded the model from local storage.")
-
-except (FileNotFoundError, Exception) as e:
-    print(f"Error loading model locally: {e}")
-    print("Falling back to downloading the model from Hugging Face...")
-    
-    # Fallback: Load the model from Hugging Face
-    model_name = 'all-MiniLM-L6-v2'
-    model = SentenceTransformer(model_name)
-    print(f"Model {model_name} downloaded from Hugging Face.")
-
-# Sample posts (these can be loaded from a database in production)
-posts = [
-    {"id": 1, "content": "Learn Next.js for modern web development."},
-    {"id": 2, "content": "Introduction to semantic search and its applications."},
-    {"id": 3, "content": "Building responsive UIs with Tailwind CSS."},
-    {"id": 4, "content": "Using Flask for building microservices."},
-    {"id": 5, "content": "Understanding Docker for containerized applications."}
-]
-
-# Pre-compute embeddings for all posts
-post_embeddings = model.encode([post["content"] for post in posts], convert_to_tensor=True)
-
 @app.route('/search', methods=['POST'])
-def search():
-    # Parse the query from the request
+def search_post():
+    """Search for posts by similarity to a given query."""
     data = request.get_json()
-    query = data.get("query", "")
+    query = data.get('query')
+    if not query:
+        return jsonify({"error": "Query parameter is required"}), 400
 
-    # Encode the query
-    query_embedding = model.encode(query, convert_to_tensor=True)
+    # Search for posts related to the query
+    results = search_posts(query)
 
-    # Compute cosine similarity
-    similarities = util.cos_sim(query_embedding, post_embeddings)[0]
+    # Format the response
+    response = []
+    for row in results:
+        response.append({
+            "id": row[0],
+            "title": row[1],
+            "description": row[2],
+            "category": row[3],
+            "similarity": row[5]
+        })
 
-    # Get the top results
-    top_results = sorted(
-        [{"id": posts[i]["id"], "content": posts[i]["content"], "score": float(sim)} 
-         for i, sim in enumerate(similarities)],
-        key=lambda x: x["score"],
-        reverse=True
-    )[:5]
+    return jsonify({"results": response})
 
-    # Return the results as JSON
-    return jsonify(top_results)
+@app.route('/add_post', methods=['POST'])
+def add_post():
+    """Add a new post with its embedding to the database."""
+    # Parse the request data
+    data = request.get_json()
+    title = data.get("title")
+    description = data.get("description")
+    category = data.get("category")
+
+    # Generate embedding for the new post
+    combined_text = title + " " + description
+    embedding = get_embedding(combined_text)
+
+    # Insert the post into the database
+    insert_post_to_db(title, description, category, embedding)
+
+    return jsonify({"message": "Post added successfully!"})
+
+@app.route('/close_db', methods=['POST'])
+def close_connection():
+    """Close the database connection."""
+    close_db_connection()
+    return jsonify({"message": "Database connection closed successfully!"})
 
 if __name__ == '__main__':
     app.run(debug=True)
